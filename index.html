@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Commute Drill — Spanish</title>
+<style>
+  :root{--bg:#101418;--card:#1b2129;--accent:#4fc3f7;--good:#66bb6a;--text:#e8edf2;--dim:#8a97a5;}
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;padding:16px;gap:14px;}
+  h1{font-size:1.1rem;color:var(--dim);font-weight:600;text-align:center;}
+  #status{background:var(--card);border-radius:16px;padding:22px 16px;text-align:center;min-height:170px;display:flex;flex-direction:column;justify-content:center;gap:10px;}
+  #section{color:var(--accent);font-size:.85rem;letter-spacing:.08em;text-transform:uppercase;}
+  #line{font-size:1.5rem;font-weight:700;line-height:1.3;}
+  #sub{color:var(--dim);font-size:1rem;}
+  #phase{font-size:.85rem;color:var(--good);height:1.2em;}
+  #bigbtn{font-size:1.5rem;font-weight:800;padding:22px;border:none;border-radius:16px;background:var(--accent);color:#00222f;width:100%;}
+  #bigbtn.playing{background:#ef5350;color:#fff;}
+  .row{display:flex;gap:10px;}
+  .row button{flex:1;padding:14px;border:none;border-radius:12px;background:var(--card);color:var(--text);font-size:1rem;}
+  #bar{height:6px;background:var(--card);border-radius:3px;overflow:hidden;}
+  #fill{height:100%;width:0%;background:var(--accent);transition:width .4s;}
+  details{background:var(--card);border-radius:12px;padding:12px;}
+  summary{color:var(--dim);font-size:.95rem;cursor:pointer;}
+  label{display:block;color:var(--dim);font-size:.85rem;margin:12px 0 4px;}
+  input[type=range]{width:100%;}
+  select,textarea{width:100%;background:#0d1116;color:var(--text);border:1px solid #2a3340;border-radius:8px;padding:8px;font-size:.9rem;}
+  textarea{min-height:110px;font-family:ui-monospace,monospace;}
+  .hint{color:var(--dim);font-size:.78rem;margin-top:4px;line-height:1.4;}
+  .val{color:var(--text);}
+</style>
+</head>
+<body>
+<h1>🚗 Commute Drill — Spanish (≈12–15 min)</h1>
+
+<div id="status">
+  <div id="section">Ready</div>
+  <div id="line">Tap START before you drive</div>
+  <div id="sub">Audio runs hands-free: prompt → pause (you answer aloud) → correct answer</div>
+  <div id="phase"></div>
+</div>
+
+<div id="bar"><div id="fill"></div></div>
+
+<button id="bigbtn">▶ START</button>
+
+<div class="row">
+  <button id="prevBtn">⏮ Back</button>
+  <button id="skipBtn">⏭ Skip item</button>
+  <button id="sectBtn">⏩ Next section</button>
+</div>
+
+<details>
+  <summary>⚙️ Settings</summary>
+  <label>Answer pause: <span class="val" id="pauseVal">4</span>s</label>
+  <input type="range" id="pauseSlider" min="2" max="8" step="1" value="4">
+  <label>Paradigm recitation pause: <span class="val" id="paraVal">12</span>s</label>
+  <input type="range" id="paraSlider" min="8" max="20" step="1" value="12">
+  <label>Spanish speech rate: <span class="val" id="rateVal">0.95</span></label>
+  <input type="range" id="rateSlider" min="0.6" max="1.2" step="0.05" value="0.95">
+  <label>Spanish voice</label><select id="esVoice"></select>
+  <label>English voice</label><select id="enVoice"></select>
+</details>
+
+<details>
+  <summary>✏️ Edit content (saved on this device)</summary>
+  <label>Paradigms — one per line: <code>Name | forms to recite</code></label>
+  <textarea id="edParadigms"></textarea>
+  <label>Contrast pairs — <code>English cue | Spanish answer</code></label>
+  <textarea id="edPairs"></textarea>
+  <label>Gap maintenance — <code>English cue | Spanish answer</code></label>
+  <textarea id="edGaps"></textarea>
+  <div class="hint">Changes save automatically and apply next time you press START.</div>
+  <button id="shareBtn" style="margin-top:12px;width:100%;padding:12px;border:none;border-radius:10px;background:#2a3340;color:var(--text);font-size:.95rem;">🔗 Copy link with today's content</button>
+  <div class="hint" id="shareMsg"></div>
+</details>
+
+<div class="hint" style="text-align:center">Keep the screen on (a car mount works well) — iPhone TTS pauses if the screen locks. This page requests a screen wake-lock automatically while playing.</div>
+
+<script>
+// ---------------- CONTENT (defaults for week of Jul 6) ----------------
+const DEFAULTS = {
+  paradigms: [
+    "Ser, presente | soy, eres, es, somos, sois, son",
+    "Estar, presente | estoy, estás, está, estamos, estáis, están",
+    "Ser, pretérito | fui, fuiste, fue, fuimos, fuisteis, fueron",
+    "Haber, imperfecto | había, habías, había, habíamos, habíais, habían"
+  ],
+  pairs: [
+    "I am a teacher — versus — I am tired | Soy profesor. Estoy cansado.",
+    "He is boring — versus — he is bored | Es aburrido. Está aburrido.",
+    "She is clever — versus — she is ready | Es lista. Está lista."
+  ],
+  gaps: [
+    "I arrived home early | Llegué a casa temprano.",
+    "I saw my sister at the market | Vi a mi hermana en el mercado.",
+    "I had already finished when you arrived | Ya había terminado cuando llegaste."
+  ]
+};
+const PARADIGM_REPS = 2, PAIR_REPS = 2, GAP_REPS = 3;
+
+// ---------------- storage (with in-memory fallback) ----------------
+let mem = {};
+const store = {
+  get(k){ try { return localStorage.getItem(k) ?? mem[k] ?? null; } catch(e){ return mem[k] ?? null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){} mem[k]=v; }
+};
+
+// ---------------- content via URL (#c=...) ----------------
+// Unicode-safe base64url
+const b64e = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g,"+").replace(/_/g,"/"))));
+function contentFromHash(){
+  const m = location.hash.match(/[#&]c=([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(b64d(m[1]));
+    if (o.paradigms && o.pairs && o.gaps) return o;
+  } catch(e){}
+  return null;
+}
+
+// ---------------- editors ----------------
+const eds = { paradigms: edParadigms, pairs: edPairs, gaps: edGaps };
+const hashContent = contentFromHash();
+for (const key in eds) {
+  if (hashContent) {
+    eds[key].value = hashContent[key].join("\n");
+    store.set("drill_"+key, eds[key].value);   // link content becomes the new saved content
+  } else {
+    eds[key].value = store.get("drill_"+key) || DEFAULTS[key].join("\n");
+  }
+  eds[key].addEventListener("input", () => store.set("drill_"+key, eds[key].value));
+}
+if (hashContent) sub.textContent = "New content loaded from link ✓ — tap START when ready";
+
+// share link with current content baked in
+shareBtn.onclick = async ()=>{
+  const payload = {
+    paradigms: eds.paradigms.value.split("\n").filter(l=>l.trim()),
+    pairs: eds.pairs.value.split("\n").filter(l=>l.trim()),
+    gaps: eds.gaps.value.split("\n").filter(l=>l.trim())
+  };
+  const url = location.origin + location.pathname + "#c=" + b64e(JSON.stringify(payload));
+  try { await navigator.clipboard.writeText(url); shareMsg.textContent = "Link copied — send it to your phone (Messages, email, AirDrop)."; }
+  catch(e){ shareMsg.textContent = "Copy this link: " + url; }
+};
+function parseLines(t){ return t.split("\n").map(l=>l.trim()).filter(l=>l.includes("|")).map(l=>{const i=l.indexOf("|");return {cue:l.slice(0,i).trim(), ans:l.slice(i+1).trim()};}); }
+
+// ---------------- settings ----------------
+function bindSlider(slider, span, key){
+  const saved = store.get(key); if (saved) slider.value = saved;
+  span.textContent = slider.value;
+  slider.addEventListener("input", ()=>{ span.textContent = slider.value; store.set(key, slider.value); });
+}
+bindSlider(pauseSlider, pauseVal, "drill_pause");
+bindSlider(paraSlider, paraVal, "drill_para");
+bindSlider(rateSlider, rateVal, "drill_rate");
+
+// ---------------- voices ----------------
+let voices = [];
+function loadVoices(){
+  voices = speechSynthesis.getVoices();
+  fillVoiceSelect(esVoice, "es", "drill_esvoice");
+  fillVoiceSelect(enVoice, "en", "drill_envoice");
+}
+function fillVoiceSelect(sel, langPrefix, key){
+  const matches = voices.filter(v=>v.lang.toLowerCase().startsWith(langPrefix));
+  sel.innerHTML = "";
+  matches.forEach(v=>{ const o=document.createElement("option"); o.value=v.name; o.textContent=`${v.name} (${v.lang})`; sel.appendChild(o); });
+  const saved = store.get(key);
+  if (saved && matches.some(v=>v.name===saved)) sel.value = saved;
+  sel.onchange = ()=>store.set(key, sel.value);
+}
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+function pickVoice(sel, langPrefix){
+  const v = voices.find(x=>x.name===sel.value);
+  return v || voices.find(x=>x.lang.toLowerCase().startsWith(langPrefix)) || null;
+}
+
+// ---------------- build playlist ----------------
+// step: {section, display, sub, say:[{text,lang,rate}], pauseAfterPromptMs, answerSay:[...]}
+function buildPlaylist(){
+  const steps = [];
+  const paradigms = parseLines(eds.paradigms.value);
+  const pairs = parseLines(eds.pairs.value);
+  const gaps = parseLines(eds.gaps.value);
+  const paraPause = +paraSlider.value*1000, ansPause = +pauseSlider.value*1000;
+
+  paradigms.forEach(p=>{ for(let r=1;r<=PARADIGM_REPS;r++) steps.push({
+    section:"1 · Paradigms", display:p.cue, sub:`Recite aloud, full speed (round ${r}/${PARADIGM_REPS})`,
+    prompt:[{text:`Paradigm: ${p.cue}. Recite.`, lang:"en"}], pause:paraPause,
+    answer:[{text:p.ans, lang:"es"}]
+  });});
+
+  pairs.forEach(p=>{ for(let r=1;r<=PAIR_REPS;r++) steps.push({
+    section:"2 · Ser vs Estar", display:p.cue.replace(/ — versus — /g," / "), sub:`Say the pair aloud (round ${r}/${PAIR_REPS})`,
+    prompt:[{text:p.cue+".", lang:"en"}], pause:ansPause,
+    answer:[{text:p.ans, lang:"es"}]
+  });});
+
+  gaps.forEach(p=>{ for(let r=1;r<=GAP_REPS;r++) steps.push({
+    section:"3 · Gap maintenance", display:p.cue, sub:`Say it in Spanish (round ${r}/${GAP_REPS})`,
+    prompt:[{text:p.cue+".", lang:"en"}], pause:ansPause,
+    answer:[{text:p.ans, lang:"es"}]
+  });});
+
+  return steps;
+}
+
+// ---------------- player ----------------
+let playlist = [], idx = 0, playing = false, timer = null, wakeLock = null;
+const synth = speechSynthesis;
+
+function speak(parts){
+  return new Promise(resolve=>{
+    if (!parts.length) return resolve();
+    let i = 0;
+    const next = ()=>{
+      if (!playing) return resolve();
+      if (i >= parts.length) return resolve();
+      const p = parts[i++];
+      const u = new SpeechSynthesisUtterance(p.text);
+      u.voice = pickVoice(p.lang==="es"?esVoice:enVoice, p.lang);
+      u.lang = u.voice ? u.voice.lang : (p.lang==="es"?"es-ES":"en-US");
+      u.rate = p.lang==="es" ? +rateSlider.value : 1.0;
+      u.onend = ()=>setTimeout(next, 250);
+      u.onerror = ()=>setTimeout(next, 250);
+      synth.speak(u);
+    };
+    next();
+  });
+}
+const wait = ms => new Promise(r=>{ timer = setTimeout(r, ms); });
+
+async function runStep(){
+  if (!playing) return;
+  if (idx >= playlist.length) return finish();
+  const s = playlist[idx];
+  section.textContent = s.section + `  ·  ${idx+1}/${playlist.length}`;
+  line.textContent = s.display;
+  sub.textContent = s.sub;
+  fill.style.width = (idx/playlist.length*100)+"%";
+  const myIdx = idx;
+
+  phase.textContent = "🔊 prompt";
+  await speak(s.prompt);
+  if (!playing || myIdx!==idx) return;
+
+  phase.textContent = "🎤 your turn — say it aloud";
+  await wait(s.pause);
+  if (!playing || myIdx!==idx) return;
+
+  phase.textContent = "✅ answer";
+  await speak(s.answer);
+  if (!playing || myIdx!==idx) return;
+
+  await wait(800);
+  if (!playing || myIdx!==idx) return;
+  idx++;
+  runStep();
+}
+
+function finish(){
+  playing = false;
+  synth.cancel();
+  section.textContent = "Done";
+  line.textContent = "¡Muy bien! Drill complete 🎉";
+  sub.textContent = "Switch to real listening for the rest of the commute.";
+  phase.textContent = "";
+  fill.style.width = "100%";
+  bigbtn.textContent = "▶ RESTART";
+  bigbtn.classList.remove("playing");
+  idx = 0;
+  if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null; }
+}
+
+async function start(){
+  playlist = buildPlaylist();
+  if (!playlist.length){ line.textContent = "No content — check Edit content."; return; }
+  playing = true;
+  bigbtn.textContent = "⏸ PAUSE";
+  bigbtn.classList.add("playing");
+  try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
+  runStep();
+}
+function pause(){
+  playing = false;
+  clearTimeout(timer);
+  synth.cancel();
+  phase.textContent = "⏸ paused";
+  bigbtn.textContent = "▶ RESUME";
+  bigbtn.classList.remove("playing");
+}
+bigbtn.onclick = ()=> playing ? pause() : start();
+
+function jump(newIdx){
+  clearTimeout(timer); synth.cancel();
+  idx = Math.max(0, Math.min(newIdx, playlist.length));
+  if (playing) runStep();
+  else if (playlist[idx]) { line.textContent = playlist[idx].display; section.textContent = playlist[idx].section; }
+}
+prevBtn.onclick = ()=>jump(idx-1);
+skipBtn.onclick = ()=>jump(idx+1);
+sectBtn.onclick = ()=>{
+  if (!playlist.length) return;
+  const cur = playlist[idx] ? playlist[idx].section : "";
+  let n = idx; while (n < playlist.length && playlist[n].section === cur) n++;
+  jump(n);
+};
+document.addEventListener("visibilitychange", async ()=>{
+  if (document.visibilityState==="visible" && playing && "wakeLock" in navigator){
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
+  }
+});
+</script>
+</body>
+</html>
