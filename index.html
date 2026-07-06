@@ -25,10 +25,12 @@
   summary{color:var(--dim);font-size:.95rem;cursor:pointer;}
   label{display:block;color:var(--dim);font-size:.85rem;margin:12px 0 4px;}
   input[type=range]{width:100%;}
-  select,textarea{width:100%;background:#0d1116;color:var(--text);border:1px solid #2a3340;border-radius:8px;padding:8px;font-size:.9rem;}
+  select,textarea,input[type=password],input[type=text]{width:100%;background:#0d1116;color:var(--text);border:1px solid #2a3340;border-radius:8px;padding:8px;font-size:.9rem;}
   textarea{min-height:110px;font-family:ui-monospace,monospace;}
   .hint{color:var(--dim);font-size:.78rem;margin-top:4px;line-height:1.4;}
   .val{color:var(--text);}
+  .btn2{margin-top:10px;width:100%;padding:12px;border:none;border-radius:10px;background:#2a3340;color:var(--text);font-size:.95rem;}
+  .ok{color:var(--good);} .bad{color:#ef5350;}
 </style>
 </head>
 <body>
@@ -51,16 +53,34 @@
   <button id="sectBtn">⏩ Next section</button>
 </div>
 
+<details id="elPanel">
+  <summary>🎙 ElevenLabs voices</summary>
+  <label>API key (stored only on this device)</label>
+  <input type="password" id="elKey" placeholder="xi-...">
+  <button class="btn2" id="elLoadBtn">Load my voices</button>
+  <div class="hint" id="elStatus">No key set — using this device's built-in voices.</div>
+  <label>Spanish voice</label><select id="elVoiceEs"></select>
+  <label>English (prompt) voice</label><select id="elVoiceEn"></select>
+  <label>Model</label>
+  <select id="elModel">
+    <option value="eleven_multilingual_v2">Multilingual v2 — best quality</option>
+    <option value="eleven_flash_v2_5">Flash v2.5 — half the credits</option>
+  </select>
+  <button class="btn2" id="preloadBtn">⚡ Preload all audio (do this on wifi)</button>
+  <div class="hint" id="preloadStatus"></div>
+  <div class="hint">Audio is cached on this device after first generation — each phrase costs credits only once, and cached playback works offline.</div>
+</details>
+
 <details>
   <summary>⚙️ Settings</summary>
   <label>Answer pause: <span class="val" id="pauseVal">4</span>s</label>
   <input type="range" id="pauseSlider" min="2" max="8" step="1" value="4">
   <label>Paradigm recitation pause: <span class="val" id="paraVal">12</span>s</label>
   <input type="range" id="paraSlider" min="8" max="20" step="1" value="12">
-  <label>Spanish speech rate: <span class="val" id="rateVal">0.95</span></label>
+  <label>Device-voice speech rate: <span class="val" id="rateVal">0.95</span> (fallback voices only)</label>
   <input type="range" id="rateSlider" min="0.6" max="1.2" step="0.05" value="0.95">
-  <label>Spanish voice</label><select id="esVoice"></select>
-  <label>English voice</label><select id="enVoice"></select>
+  <label>Fallback Spanish voice (device)</label><select id="esVoice"></select>
+  <label>Fallback English voice (device)</label><select id="enVoice"></select>
 </details>
 
 <details>
@@ -72,14 +92,14 @@
   <label>Gap maintenance — <code>English cue | Spanish answer</code></label>
   <textarea id="edGaps"></textarea>
   <div class="hint">Changes save automatically and apply next time you press START.</div>
-  <button id="shareBtn" style="margin-top:12px;width:100%;padding:12px;border:none;border-radius:10px;background:#2a3340;color:var(--text);font-size:.95rem;">🔗 Copy link with today's content</button>
+  <button class="btn2" id="shareBtn">🔗 Copy link with today's content</button>
   <div class="hint" id="shareMsg"></div>
 </details>
 
-<div class="hint" style="text-align:center">Keep the screen on (a car mount works well) — iPhone TTS pauses if the screen locks. This page requests a screen wake-lock automatically while playing.</div>
+<div class="hint" style="text-align:center">Keep the screen on while playing (a car mount works well). Preload on wifi before driving for instant, offline playback.</div>
 
 <script>
-// ---------------- CONTENT (defaults for week of Jul 6) ----------------
+// ---------------- CONTENT (defaults) ----------------
 const DEFAULTS = {
   paradigms: [
     "Ser, presente | soy, eres, es, somos, sois, son",
@@ -100,24 +120,50 @@ const DEFAULTS = {
 };
 const PARADIGM_REPS = 2, PAIR_REPS = 2, GAP_REPS = 3;
 
-// ---------------- storage (with in-memory fallback) ----------------
+// ---------------- storage ----------------
 let mem = {};
 const store = {
   get(k){ try { return localStorage.getItem(k) ?? mem[k] ?? null; } catch(e){ return mem[k] ?? null; } },
   set(k,v){ try { localStorage.setItem(k,v); } catch(e){} mem[k]=v; }
 };
 
+// ---------------- IndexedDB audio cache ----------------
+let idb = null;
+function idbOpen(){
+  return new Promise((res)=>{
+    if (idb) return res(idb);
+    try {
+      const rq = indexedDB.open("drillAudio", 1);
+      rq.onupgradeneeded = ()=>rq.result.createObjectStore("audio");
+      rq.onsuccess = ()=>{ idb = rq.result; res(idb); };
+      rq.onerror = ()=>res(null);
+    } catch(e){ res(null); }
+  });
+}
+async function cacheGet(key){
+  const db = await idbOpen(); if (!db) return null;
+  return new Promise(res=>{
+    const rq = db.transaction("audio").objectStore("audio").get(key);
+    rq.onsuccess = ()=>res(rq.result || null);
+    rq.onerror = ()=>res(null);
+  });
+}
+async function cachePut(key, blob){
+  const db = await idbOpen(); if (!db) return;
+  return new Promise(res=>{
+    const tx = db.transaction("audio","readwrite");
+    tx.objectStore("audio").put(blob, key);
+    tx.oncomplete = ()=>res(); tx.onerror = ()=>res();
+  });
+}
+
 // ---------------- content via URL (#c=...) ----------------
-// Unicode-safe base64url
 const b64e = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g,"+").replace(/_/g,"/"))));
 function contentFromHash(){
   const m = location.hash.match(/[#&]c=([A-Za-z0-9_-]+)/);
   if (!m) return null;
-  try {
-    const o = JSON.parse(b64d(m[1]));
-    if (o.paradigms && o.pairs && o.gaps) return o;
-  } catch(e){}
+  try { const o = JSON.parse(b64d(m[1])); if (o.paradigms && o.pairs && o.gaps) return o; } catch(e){}
   return null;
 }
 
@@ -125,17 +171,14 @@ function contentFromHash(){
 const eds = { paradigms: edParadigms, pairs: edPairs, gaps: edGaps };
 const hashContent = contentFromHash();
 for (const key in eds) {
-  if (hashContent) {
-    eds[key].value = hashContent[key].join("\n");
-    store.set("drill_"+key, eds[key].value);   // link content becomes the new saved content
-  } else {
-    eds[key].value = store.get("drill_"+key) || DEFAULTS[key].join("\n");
-  }
+  if (hashContent) { eds[key].value = hashContent[key].join("\n"); store.set("drill_"+key, eds[key].value); }
+  else { eds[key].value = store.get("drill_"+key) || DEFAULTS[key].join("\n"); }
   eds[key].addEventListener("input", () => store.set("drill_"+key, eds[key].value));
 }
 if (hashContent) sub.textContent = "New content loaded from link ✓ — tap START when ready";
 
-// share link with current content baked in
+function parseLines(t){ return t.split("\n").map(l=>l.trim()).filter(l=>l.includes("|")).map(l=>{const i=l.indexOf("|");return {cue:l.slice(0,i).trim(), ans:l.slice(i+1).trim()};}); }
+
 shareBtn.onclick = async ()=>{
   const payload = {
     paradigms: eds.paradigms.value.split("\n").filter(l=>l.trim()),
@@ -143,10 +186,9 @@ shareBtn.onclick = async ()=>{
     gaps: eds.gaps.value.split("\n").filter(l=>l.trim())
   };
   const url = location.origin + location.pathname + "#c=" + b64e(JSON.stringify(payload));
-  try { await navigator.clipboard.writeText(url); shareMsg.textContent = "Link copied — send it to your phone (Messages, email, AirDrop)."; }
+  try { await navigator.clipboard.writeText(url); shareMsg.textContent = "Link copied — send it to your phone."; }
   catch(e){ shareMsg.textContent = "Copy this link: " + url; }
 };
-function parseLines(t){ return t.split("\n").map(l=>l.trim()).filter(l=>l.includes("|")).map(l=>{const i=l.indexOf("|");return {cue:l.slice(0,i).trim(), ans:l.slice(i+1).trim()};}); }
 
 // ---------------- settings ----------------
 function bindSlider(slider, span, key){
@@ -158,10 +200,10 @@ bindSlider(pauseSlider, pauseVal, "drill_pause");
 bindSlider(paraSlider, paraVal, "drill_para");
 bindSlider(rateSlider, rateVal, "drill_rate");
 
-// ---------------- voices ----------------
+// ---------------- device voices (fallback) ----------------
 let voices = [];
 function loadVoices(){
-  voices = speechSynthesis.getVoices();
+  try { voices = speechSynthesis.getVoices(); } catch(e){ voices = []; }
   fillVoiceSelect(esVoice, "es", "drill_esvoice");
   fillVoiceSelect(enVoice, "en", "drill_envoice");
 }
@@ -173,15 +215,96 @@ function fillVoiceSelect(sel, langPrefix, key){
   if (saved && matches.some(v=>v.name===saved)) sel.value = saved;
   sel.onchange = ()=>store.set(key, sel.value);
 }
-speechSynthesis.onvoiceschanged = loadVoices;
+try { speechSynthesis.onvoiceschanged = loadVoices; } catch(e){}
 loadVoices();
 function pickVoice(sel, langPrefix){
   const v = voices.find(x=>x.name===sel.value);
   return v || voices.find(x=>x.lang.toLowerCase().startsWith(langPrefix)) || null;
 }
 
+// ---------------- ElevenLabs ----------------
+elKey.value = store.get("drill_elkey") || "";
+elModel.value = store.get("drill_elmodel") || "eleven_multilingual_v2";
+elKey.addEventListener("input", ()=>{ store.set("drill_elkey", elKey.value.trim()); updateElStatus(); });
+elModel.onchange = ()=>store.set("drill_elmodel", elModel.value);
+
+function elEnabled(){ return elKey.value.trim().length > 10; }
+function updateElStatus(msg, cls){
+  if (msg){ elStatus.textContent = msg; elStatus.className = "hint " + (cls||""); return; }
+  elStatus.textContent = elEnabled() ? "Key set ✓ — ElevenLabs voices active." : "No key set — using this device's built-in voices.";
+  elStatus.className = "hint " + (elEnabled() ? "ok" : "");
+}
+
+function fillElSelect(sel, key, list){
+  sel.innerHTML = "";
+  list.forEach(v=>{ const o=document.createElement("option"); o.value=v.voice_id; o.textContent=v.name + (v.labels && v.labels.language ? ` (${v.labels.language})` : ""); sel.appendChild(o); });
+  const saved = store.get(key);
+  if (saved && list.some(v=>v.voice_id===saved)) sel.value = saved;
+  sel.onchange = ()=>store.set(key, sel.value);
+  if (sel.value) store.set(key, sel.value);
+}
+async function loadElVoices(){
+  if (!elEnabled()){ updateElStatus("Enter your API key first.", "bad"); return; }
+  updateElStatus("Loading voices…");
+  try {
+    const r = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": elKey.value.trim() } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    const list = data.voices || [];
+    if (!list.length) throw new Error("no voices returned");
+    fillElSelect(elVoiceEs, "drill_el_es", list);
+    fillElSelect(elVoiceEn, "drill_el_en", list);
+    updateElStatus(`Loaded ${list.length} voices ✓ — pick one for Spanish and one for English prompts.`, "ok");
+  } catch(e){
+    updateElStatus("Could not load voices (" + e.message + "). Check the key and your connection.", "bad");
+  }
+}
+elLoadBtn.onclick = loadElVoices;
+// restore saved voice ids even before voices are re-fetched
+["drill_el_es","drill_el_en"].forEach((k,i)=>{
+  const saved = store.get(k);
+  if (saved){ const sel = i===0?elVoiceEs:elVoiceEn; const o=document.createElement("option"); o.value=saved; o.textContent="(saved voice)"; sel.appendChild(o); sel.value=saved; }
+});
+updateElStatus();
+if (elEnabled()) loadElVoices();
+
+async function elFetchAudio(text, voiceId){
+  const model = elModel.value;
+  const key = "el|" + model + "|" + voiceId + "|" + text;
+  let blob = await cacheGet(key);
+  if (blob) return blob;
+  const r = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId + "?output_format=mp3_44100_96", {
+    method: "POST",
+    headers: { "xi-api-key": elKey.value.trim(), "Content-Type": "application/json" },
+    body: JSON.stringify({ text, model_id: model })
+  });
+  if (!r.ok) throw new Error("TTS HTTP " + r.status);
+  blob = await r.blob();
+  await cachePut(key, blob);
+  return blob;
+}
+
+// ---------------- audio playback (unlocked <audio> element) ----------------
+const sharedAudio = new Audio();
+let audioUnlocked = false;
+function unlockAudio(){
+  if (audioUnlocked) return;
+  // tiny silent wav — playing it inside the tap gesture unlocks the element on iOS
+  sharedAudio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+  sharedAudio.play().catch(()=>{});
+  audioUnlocked = true;
+}
+function playBlob(blob){
+  return new Promise(resolve=>{
+    const url = URL.createObjectURL(blob);
+    sharedAudio.src = url;
+    sharedAudio.onended = ()=>{ URL.revokeObjectURL(url); resolve(); };
+    sharedAudio.onerror = ()=>{ URL.revokeObjectURL(url); resolve(); };
+    sharedAudio.play().catch(()=>resolve());
+  });
+}
+
 // ---------------- build playlist ----------------
-// step: {section, display, sub, say:[{text,lang,rate}], pauseAfterPromptMs, answerSay:[...]}
 function buildPlaylist(){
   const steps = [];
   const paradigms = parseLines(eds.paradigms.value);
@@ -194,45 +317,71 @@ function buildPlaylist(){
     prompt:[{text:`Paradigm: ${p.cue}. Recite.`, lang:"en"}], pause:paraPause,
     answer:[{text:p.ans, lang:"es"}]
   });});
-
   pairs.forEach(p=>{ for(let r=1;r<=PAIR_REPS;r++) steps.push({
     section:"2 · Ser vs Estar", display:p.cue.replace(/ — versus — /g," / "), sub:`Say the pair aloud (round ${r}/${PAIR_REPS})`,
     prompt:[{text:p.cue+".", lang:"en"}], pause:ansPause,
     answer:[{text:p.ans, lang:"es"}]
   });});
-
   gaps.forEach(p=>{ for(let r=1;r<=GAP_REPS;r++) steps.push({
     section:"3 · Gap maintenance", display:p.cue, sub:`Say it in Spanish (round ${r}/${GAP_REPS})`,
     prompt:[{text:p.cue+".", lang:"en"}], pause:ansPause,
     answer:[{text:p.ans, lang:"es"}]
   });});
-
   return steps;
 }
 
-// ---------------- player ----------------
-let playlist = [], idx = 0, playing = false, timer = null, wakeLock = null;
-const synth = speechSynthesis;
+// ---------------- preload ----------------
+preloadBtn.onclick = async ()=>{
+  if (!elEnabled()){ preloadStatus.textContent = "Set your API key first."; return; }
+  if (!elVoiceEs.value || !elVoiceEn.value){ preloadStatus.textContent = "Load and pick your voices first."; return; }
+  const pl = buildPlaylist();
+  const jobs = [];
+  const seen = new Set();
+  pl.forEach(s=>{
+    s.prompt.forEach(p=>{ const id = elVoiceEn.value + "|" + p.text; if(!seen.has(id)){ seen.add(id); jobs.push({text:p.text, voice:elVoiceEn.value}); }});
+    s.answer.forEach(p=>{ const id = elVoiceEs.value + "|" + p.text; if(!seen.has(id)){ seen.add(id); jobs.push({text:p.text, voice:elVoiceEs.value}); }});
+  });
+  let done = 0, failed = 0;
+  for (const j of jobs){
+    try { await elFetchAudio(j.text, j.voice); } catch(e){ failed++; }
+    done++;
+    preloadStatus.textContent = `Preloading ${done}/${jobs.length}` + (failed?` (${failed} failed)`:"");
+  }
+  preloadStatus.textContent = failed ? `Done with ${failed} failures — check key/credits and retry.` : `All ${jobs.length} phrases cached ✓ — ready to drive, even offline.`;
+};
 
-function speak(parts){
+// ---------------- speech (EL first, device fallback) ----------------
+const synth = window.speechSynthesis;
+function speakDevice(p){
   return new Promise(resolve=>{
-    if (!parts.length) return resolve();
-    let i = 0;
-    const next = ()=>{
-      if (!playing) return resolve();
-      if (i >= parts.length) return resolve();
-      const p = parts[i++];
+    try {
       const u = new SpeechSynthesisUtterance(p.text);
       u.voice = pickVoice(p.lang==="es"?esVoice:enVoice, p.lang);
       u.lang = u.voice ? u.voice.lang : (p.lang==="es"?"es-ES":"en-US");
       u.rate = p.lang==="es" ? +rateSlider.value : 1.0;
-      u.onend = ()=>setTimeout(next, 250);
-      u.onerror = ()=>setTimeout(next, 250);
+      u.onend = resolve; u.onerror = resolve;
       synth.speak(u);
-    };
-    next();
+    } catch(e){ resolve(); }
   });
 }
+async function speak(parts){
+  for (const p of parts){
+    if (!playing) return;
+    if (elEnabled() && (p.lang==="es" ? elVoiceEs.value : elVoiceEn.value)){
+      try {
+        const blob = await elFetchAudio(p.text, p.lang==="es" ? elVoiceEs.value : elVoiceEn.value);
+        if (!playing) return;
+        await playBlob(blob);
+      } catch(e){ await speakDevice(p); }   // offline / error → device voice
+    } else {
+      await speakDevice(p);
+    }
+    await new Promise(r=>setTimeout(r, 250));
+  }
+}
+
+// ---------------- player ----------------
+let playlist = [], idx = 0, playing = false, timer = null, wakeLock = null;
 const wait = ms => new Promise(r=>{ timer = setTimeout(r, ms); });
 
 async function runStep(){
@@ -265,7 +414,8 @@ async function runStep(){
 
 function finish(){
   playing = false;
-  synth.cancel();
+  try { synth.cancel(); } catch(e){}
+  sharedAudio.pause();
   section.textContent = "Done";
   line.textContent = "¡Muy bien! Drill complete 🎉";
   sub.textContent = "Switch to real listening for the rest of the commute.";
@@ -280,6 +430,7 @@ function finish(){
 async function start(){
   playlist = buildPlaylist();
   if (!playlist.length){ line.textContent = "No content — check Edit content."; return; }
+  unlockAudio();
   playing = true;
   bigbtn.textContent = "⏸ PAUSE";
   bigbtn.classList.add("playing");
@@ -289,7 +440,8 @@ async function start(){
 function pause(){
   playing = false;
   clearTimeout(timer);
-  synth.cancel();
+  try { synth.cancel(); } catch(e){}
+  sharedAudio.pause();
   phase.textContent = "⏸ paused";
   bigbtn.textContent = "▶ RESUME";
   bigbtn.classList.remove("playing");
@@ -297,7 +449,9 @@ function pause(){
 bigbtn.onclick = ()=> playing ? pause() : start();
 
 function jump(newIdx){
-  clearTimeout(timer); synth.cancel();
+  clearTimeout(timer);
+  try { synth.cancel(); } catch(e){}
+  sharedAudio.pause();
   idx = Math.max(0, Math.min(newIdx, playlist.length));
   if (playing) runStep();
   else if (playlist[idx]) { line.textContent = playlist[idx].display; section.textContent = playlist[idx].section; }
