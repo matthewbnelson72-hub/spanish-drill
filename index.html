@@ -277,15 +277,25 @@ elLoadBtn.onclick = loadElVoices;
 updateElStatus();
 if (elEnabled()) loadElVoices();
 
-async function elFetchAudio(text){
+// Accepts a string or a part object {text, prev, next}. prev/next are surrounding
+// sentence context sent to ElevenLabs so short fragments ("soy", "eres") are
+// pronounced as part of the full Spanish sentence instead of as isolated words.
+async function elFetchAudio(part){
+  const p = (typeof part === "string") ? {text: part} : part;
   const model = elModel.value, voiceId = elVoiceEs.value;
-  const key = "el|" + model + "|" + voiceId + "|" + text;
+  const prev = p.prev || "", next = p.next || "";
+  // context-free phrases keep the old key format, so existing cached audio still hits
+  const key = "el|" + model + "|" + voiceId + "|" + (prev ? prev + "«" : "") + p.text + (next ? "»" + next : "");
   let blob = await cacheGet(key);
   if (blob) return blob;
+  const body = { text: p.text, model_id: model };
+  if (prev) body.previous_text = prev;
+  if (next) body.next_text = next;
+  if (model === "eleven_flash_v2_5") body.language_code = "es";
   const r = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId + "?output_format=mp3_44100_96", {
     method: "POST",
     headers: { "xi-api-key": elKey.value.trim(), "Content-Type": "application/json" },
-    body: JSON.stringify({ text, model_id: model })
+    body: JSON.stringify(body)
   });
   if (!r.ok) throw new Error("TTS HTTP " + r.status);
   blob = await r.blob();
@@ -345,9 +355,9 @@ function cueToParts(cue){
   if (i === -1) return [{text:cue}];
   const before = cue.slice(0, i).trim(), after = cue.slice(i + 1).trim();
   const parts = [];
-  if (before) parts.push({text:before});
+  if (before) parts.push({text:before, next:" " + after});
   parts.push({beep:true});
-  if (after) parts.push({text:after});
+  if (after) parts.push({text:after, prev:before + " "});
   return parts;
 }
 // A paradigm answer "soy, eres, es..." becomes one part per form with a pause between
@@ -357,7 +367,10 @@ function paradigmAnswerParts(ans){
   const gapMs = Math.round(+formSlider.value * 1000);
   const parts = [];
   forms.forEach((f, i)=>{
-    parts.push({text:f});
+    const part = {text:f};
+    if (i > 0) part.prev = forms.slice(0, i).join(", ") + ", ";
+    if (i < forms.length - 1) part.next = ", " + forms.slice(i + 1).join(", ");
+    parts.push(part);
     if (i < forms.length - 1) parts.push({gap:gapMs});
   });
   return parts;
@@ -402,9 +415,11 @@ preloadBtn.onclick = async ()=>{
   if (!elEnabled()){ preloadStatus.textContent = "Set your API key first."; return; }
   if (!elVoiceEs.value){ preloadStatus.textContent = "Load and pick your voice first."; return; }
   const pl = buildPlaylist();
-  const texts = new Set([OUTRO]);
-  pl.forEach(s=>{ s.prompt.forEach(p=>{ if (p.text) texts.add(p.text); }); s.answer.forEach(p=>{ if (p.text) texts.add(p.text); }); });
-  const jobs = [...texts];
+  const parts = new Map();
+  const addPart = p => { if (p.text) parts.set((p.prev||"") + "«" + p.text + "»" + (p.next||""), p); };
+  addPart({text: OUTRO});
+  pl.forEach(s=>{ s.prompt.forEach(addPart); s.answer.forEach(addPart); });
+  const jobs = [...parts.values()];
   let done = 0, failed = 0;
   for (const t of jobs){
     try { await elFetchAudio(t); } catch(e){ failed++; }
@@ -435,7 +450,7 @@ async function speak(parts){
     if (p.beep){ await playBeep(); continue; }
     if (elEnabled() && elVoiceEs.value){
       try {
-        const blob = await elFetchAudio(p.text);
+        const blob = await elFetchAudio(p);
         if (!playing) return;
         await playBlob(blob);
       } catch(e){ await speakDevice(p.text); }
