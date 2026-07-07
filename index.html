@@ -39,7 +39,7 @@
 <div id="status">
   <div id="section">Listo</div>
   <div id="line">Pulsa EMPEZAR antes de conducir</div>
-  <div id="sub">Instrucciones y ejercicios 100% en español: frase incompleta → pausa (tú respondes) → respuesta correcta</div>
+  <div id="sub">Frase con «bip» en el hueco → pausa (tú respondes) → respuesta correcta</div>
   <div id="phase"></div>
 </div>
 
@@ -77,6 +77,8 @@
   <input type="range" id="pauseSlider" min="2" max="8" step="1" value="4">
   <label>Paradigm recitation pause: <span class="val" id="paraVal">12</span>s</label>
   <input type="range" id="paraSlider" min="8" max="20" step="1" value="12">
+  <label>Pause between paradigm forms: <span class="val" id="formVal">1.0</span>s</label>
+  <input type="range" id="formSlider" min="0.5" max="2" step="0.25" value="1">
   <label>Device-voice speech rate: <span class="val" id="rateVal">0.95</span> (fallback voice only)</label>
   <input type="range" id="rateSlider" min="0.6" max="1.2" step="0.05" value="0.95">
   <label>Fallback Spanish voice (device)</label><select id="esVoice"></select>
@@ -84,11 +86,11 @@
 
 <details>
   <summary>✏️ Edit content (saved on this device)</summary>
-  <label>Paradigms — one per line: <code>Name | forms to recite</code></label>
+  <label>Paradigms — one per line: <code>Name | forms separated by commas</code> (1s pause between forms in the answer)</label>
   <textarea id="edParadigms"></textarea>
-  <label>¿Ser o estar? — <code>Spanish cloze cue | full Spanish answer</code></label>
+  <label>¿Ser o estar? — <code>cue | answer</code> (the — dash plays as a soft beep)</label>
   <textarea id="edPairs"></textarea>
-  <label>Mantenimiento — <code>Spanish cloze cue | full Spanish answer</code></label>
+  <label>Mantenimiento — <code>cue | answer</code> (the — dash plays as a soft beep)</label>
   <textarea id="edGaps"></textarea>
   <div class="hint">Changes save automatically and apply next time you press EMPEZAR.</div>
   <button class="btn2" id="shareBtn">🔗 Copy link with today's content</button>
@@ -98,13 +100,13 @@
 <div class="hint" style="text-align:center">Keep the screen on while playing (a car mount works well). Preload on wifi before driving for instant, offline playback.</div>
 
 <script>
-// ---------------- CONTENT v2 — todo en español ----------------
+// ---------------- CONTENT v3 — bip en el hueco, pausa entre formas, sin vosotros ----------------
 const DEFAULTS = {
   paradigms: [
-    "Ser, presente | soy, eres, es, somos, sois, son",
-    "Estar, presente | estoy, estás, está, estamos, estáis, están",
-    "Ser, pretérito | fui, fuiste, fue, fuimos, fuisteis, fueron",
-    "Haber, imperfecto | había, habías, había, habíamos, habíais, habían"
+    "Ser, presente | soy, eres, es, somos, son",
+    "Estar, presente | estoy, estás, está, estamos, están",
+    "Ser, pretérito | fui, fuiste, fue, fuimos, fueron",
+    "Haber, imperfecto | había, habías, había, habíamos, habían"
   ],
   pairs: [
     "¿Ser o estar? Yo — profesor. | Soy profesor.",
@@ -122,8 +124,8 @@ const DEFAULTS = {
 };
 const INTROS = {
   s1: "Primera parte: paradigmas. Escucha el verbo y el tiempo, y recita el paradigma completo en voz alta, a toda velocidad. Después escucharás la respuesta correcta.",
-  s2: "Segunda parte: ¿ser o estar? Escucha la frase incompleta y dila completa, en voz alta, con la forma correcta.",
-  s3: "Tercera parte: mantenimiento. Escucha la frase incompleta y dila completa en voz alta. Tres veces cada una."
+  s2: "Segunda parte: ¿ser o estar? Escucha la frase incompleta. Donde suene el bip, falta la palabra. Di la frase completa en voz alta.",
+  s3: "Tercera parte: mantenimiento. Escucha la frase incompleta. Donde suene el bip, falta algo. Di la frase completa en voz alta. Tres veces cada una."
 };
 const OUTRO = "¡Muy bien! Ejercicio completado. Ahora, continúa con la escucha real.";
 const PARADIGM_REPS = 2, PAIR_REPS = 2, GAP_REPS = 3;
@@ -187,13 +189,13 @@ function contentFromHash(){
   return null;
 }
 
-// ---------------- editors (v2 keys so old English content is not loaded) ----------------
+// ---------------- editors (v3 keys so v2 vosotros content is not loaded) ----------------
 const eds = { paradigms: edParadigms, pairs: edPairs, gaps: edGaps };
 const hashContent = contentFromHash();
 for (const key in eds) {
-  if (hashContent) { eds[key].value = hashContent[key].join("\n"); store.set("drillv2_"+key, eds[key].value); }
-  else { eds[key].value = store.get("drillv2_"+key) || DEFAULTS[key].join("\n"); }
-  eds[key].addEventListener("input", () => store.set("drillv2_"+key, eds[key].value));
+  if (hashContent) { eds[key].value = hashContent[key].join("\n"); store.set("drillv3_"+key, eds[key].value); }
+  else { eds[key].value = store.get("drillv3_"+key) || DEFAULTS[key].join("\n"); }
+  eds[key].addEventListener("input", () => store.set("drillv3_"+key, eds[key].value));
 }
 if (hashContent) sub.textContent = "Nuevo contenido cargado ✓ — pulsa EMPEZAR";
 
@@ -218,6 +220,7 @@ function bindSlider(slider, span, key){
 }
 bindSlider(pauseSlider, pauseVal, "drill_pause");
 bindSlider(paraSlider, paraVal, "drill_para");
+bindSlider(formSlider, formVal, "drill_formgap");
 bindSlider(rateSlider, rateVal, "drill_rate");
 
 // ---------------- device voice (fallback) ----------------
@@ -292,11 +295,15 @@ async function elFetchAudio(text){
 
 // ---------------- audio playback ----------------
 const sharedAudio = new Audio();
-let audioUnlocked = false;
+let audioUnlocked = false, actx = null;
 function unlockAudio(){
   if (audioUnlocked) return;
   sharedAudio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
   sharedAudio.play().catch(()=>{});
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === "suspended") actx.resume();
+  } catch(e){}
   audioUnlocked = true;
 }
 function playBlob(blob){
@@ -307,6 +314,53 @@ function playBlob(blob){
     sharedAudio.onerror = ()=>{ URL.revokeObjectURL(url); resolve(); };
     sharedAudio.play().catch(()=>resolve());
   });
+}
+// soft beep for the blank: short, gentle sine tone
+function playBeep(){
+  return new Promise(res=>{
+    let settled = false;
+    const done = ()=>{ if (!settled){ settled = true; res(); } };
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") actx.resume();
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = "sine"; o.frequency.value = 740;
+      const t = actx.currentTime;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.15, t + 0.03);
+      g.gain.setValueAtTime(0.15, t + 0.22);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+      o.connect(g); g.connect(actx.destination);
+      o.start(t); o.stop(t + 0.36);
+      o.onended = done;
+    } catch(e){}
+    setTimeout(done, 500); // fallback so playback never hangs
+  });
+}
+
+// ---------------- part builders ----------------
+// A cue with an em-dash (—) becomes: text before → soft beep → text after
+function cueToParts(cue){
+  const i = cue.indexOf("—");
+  if (i === -1) return [{text:cue}];
+  const before = cue.slice(0, i).trim(), after = cue.slice(i + 1).trim();
+  const parts = [];
+  if (before) parts.push({text:before});
+  parts.push({beep:true});
+  if (after) parts.push({text:after});
+  return parts;
+}
+// A paradigm answer "soy, eres, es..." becomes one part per form with a pause between
+function paradigmAnswerParts(ans){
+  const forms = ans.split(",").map(f=>f.trim()).filter(Boolean);
+  if (forms.length < 2) return [{text:ans}];
+  const gapMs = Math.round(+formSlider.value * 1000);
+  const parts = [];
+  forms.forEach((f, i)=>{
+    parts.push({text:f});
+    if (i < forms.length - 1) parts.push({gap:gapMs});
+  });
+  return parts;
 }
 
 // ---------------- build playlist ----------------
@@ -322,14 +376,14 @@ function buildPlaylist(){
   paradigms.forEach(p=>{ for(let r=1;r<=PARADIGM_REPS;r++) steps.push({
     section:"1 · Paradigmas", display:p.cue, sub:`Recita en voz alta (ronda ${r}/${PARADIGM_REPS})`,
     prompt:[{text:`Paradigma: ${p.cue}. Recita.`}], pause:paraPause,
-    answer:[{text:p.ans}]
+    answer:paradigmAnswerParts(p.ans)
   });});
 
   if (pairs.length) steps.push({ section:"2 · ¿Ser o estar?", display:"Instrucciones", sub:"Escucha…",
     prompt:[{text:INTROS.s2}], pause:800, answer:[] });
   pairs.forEach(p=>{ for(let r=1;r<=PAIR_REPS;r++) steps.push({
     section:"2 · ¿Ser o estar?", display:p.cue.replace(/^¿Ser o estar\? /,""), sub:`Di la frase completa (ronda ${r}/${PAIR_REPS})`,
-    prompt:[{text:p.cue}], pause:ansPause,
+    prompt:cueToParts(p.cue), pause:ansPause,
     answer:[{text:p.ans}]
   });});
 
@@ -337,7 +391,7 @@ function buildPlaylist(){
     prompt:[{text:INTROS.s3}], pause:800, answer:[] });
   gaps.forEach(p=>{ for(let r=1;r<=GAP_REPS;r++) steps.push({
     section:"3 · Mantenimiento", display:p.cue.replace(/^Completa: /,""), sub:`Di la frase completa (ronda ${r}/${GAP_REPS})`,
-    prompt:[{text:p.cue}], pause:ansPause,
+    prompt:cueToParts(p.cue), pause:ansPause,
     answer:[{text:p.ans}]
   });});
   return steps;
@@ -349,7 +403,7 @@ preloadBtn.onclick = async ()=>{
   if (!elVoiceEs.value){ preloadStatus.textContent = "Load and pick your voice first."; return; }
   const pl = buildPlaylist();
   const texts = new Set([OUTRO]);
-  pl.forEach(s=>{ s.prompt.forEach(p=>texts.add(p.text)); s.answer.forEach(p=>texts.add(p.text)); });
+  pl.forEach(s=>{ s.prompt.forEach(p=>{ if (p.text) texts.add(p.text); }); s.answer.forEach(p=>{ if (p.text) texts.add(p.text); }); });
   const jobs = [...texts];
   let done = 0, failed = 0;
   for (const t of jobs){
@@ -377,6 +431,8 @@ function speakDevice(text){
 async function speak(parts){
   for (const p of parts){
     if (!playing) return;
+    if (p.gap){ await new Promise(r=>setTimeout(r, p.gap)); continue; }
+    if (p.beep){ await playBeep(); continue; }
     if (elEnabled() && elVoiceEs.value){
       try {
         const blob = await elFetchAudio(p.text);
@@ -386,7 +442,7 @@ async function speak(parts){
     } else {
       await speakDevice(p.text);
     }
-    await new Promise(r=>setTimeout(r, 250));
+    await new Promise(r=>setTimeout(r, 150));
   }
 }
 
