@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Test — Commute Drill</title>
+<style>
+  body{background:#101418;color:#e8edf2;font-family:-apple-system,system-ui,sans-serif;padding:16px;display:flex;flex-direction:column;gap:12px;}
+  h1{font-size:1.1rem;color:#8a97a5;text-align:center;}
+  #label{background:#1b2129;border-radius:14px;padding:20px;text-align:center;font-size:1.2rem;font-weight:700;min-height:70px;display:flex;align-items:center;justify-content:center;}
+  #info{color:#8a97a5;font-size:.85rem;text-align:center;min-height:1.2em;}
+  button{padding:16px;border:none;border-radius:12px;background:#4fc3f7;color:#00222f;font-size:1rem;font-weight:700;}
+  button.alt{background:#2a3340;color:#e8edf2;}
+  #log{font-size:.78rem;color:#8a97a5;white-space:pre-wrap;font-family:ui-monospace,monospace;}
+</style>
+</head>
+<body>
+<h1>🔬 Audio Test — usa la clave y caché guardadas en este dispositivo</h1>
+<div id="label">Elige un test</div>
+<div id="info"></div>
+<button id="t1">Test 1 · 6 muestras FRESCAS (sin caché)</button>
+<button id="t2" class="alt">Test 2 · Paradigma como el drill (CON caché)</button>
+<button id="t3" class="alt">Test 3 · Paradigma fresco (sin caché)</button>
+<div id="log"></div>
+<script>
+const store = k => { try { return localStorage.getItem(k); } catch(e){ return null; } };
+const KEY = store("drill_elkey") || "", VOICE = store("drill_el_es") || "", MODEL = store("drill_elmodel") || "eleven_multilingual_v2";
+info.textContent = KEY ? ("Clave ✓ · voz " + (VOICE ? "✓" : "✗ FALTA") + " · " + MODEL) : "✗ No hay clave guardada en este dispositivo";
+
+let idb=null;
+function idbOpen(){ return new Promise(res=>{ if(idb)return res(idb); try{ const rq=indexedDB.open("drillAudio",1); rq.onupgradeneeded=()=>rq.result.createObjectStore("audio"); rq.onsuccess=()=>{idb=rq.result;res(idb);}; rq.onerror=()=>res(null);}catch(e){res(null);} }); }
+async function cacheGet(key){ const db=await idbOpen(); if(!db)return null; return new Promise(res=>{ const rq=db.transaction("audio").objectStore("audio").get(key); rq.onsuccess=()=>res(rq.result||null); rq.onerror=()=>res(null); }); }
+
+async function gen(p, useCache){
+  const prev=p.prev||"", next=p.next||"";
+  const key="el|"+MODEL+"|"+VOICE+"|"+(prev?prev+"«":"")+p.text+(next?"»"+next:"");
+  if (useCache){ const c=await cacheGet(key); if (c) return {blob:c, from:"caché"}; }
+  const body={text:p.text, model_id:MODEL};
+  if (prev) body.previous_text=prev;
+  if (next) body.next_text=next;
+  if (MODEL==="eleven_flash_v2_5") body.language_code="es";
+  const r=await fetch("https://api.elevenlabs.io/v1/text-to-speech/"+VOICE+"?output_format=mp3_44100_96",{method:"POST",headers:{"xi-api-key":KEY,"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return {blob:await r.blob(), from:"API"};
+}
+const a=new Audio();
+function play(blob){ return new Promise(res=>{ const u=URL.createObjectURL(blob); a.src=u; a.onended=()=>{URL.revokeObjectURL(u);res();}; a.onerror=()=>res(); a.play().catch(()=>res()); }); }
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const logln=s=>{ log.textContent+=s+"\n"; };
+
+const SAMPLES=[
+  {label:"A: eres (solo)", p:{text:"eres"}},
+  {label:"B: eres (contexto)", p:{text:"eres",prev:"soy, ",next:", es, somos, son"}},
+  {label:"C: soy (contexto)", p:{text:"soy",next:", eres, es, somos, son"}},
+  {label:"D: frase completa", p:{text:"soy, eres, es, somos, son"}},
+  {label:"E: ¿Ser o estar? Yo", p:{text:"¿Ser o estar? Yo",next:" profesor."}},
+  {label:"F: profesor.", p:{text:"profesor.",prev:"¿Ser o estar? Yo "}}
+];
+const FORMS=["soy","eres","es","somos","son"];
+const paraParts=FORMS.map((f,i)=>({text:f, prev:i?FORMS.slice(0,i).join(", ")+", ":undefined, next:i<FORMS.length-1?", "+FORMS.slice(i+1).join(", "):undefined}));
+
+async function run(parts, useCache, gapMs){
+  log.textContent="";
+  for (const t of parts){
+    const lbl=t.label||t.p&&t.p.text||t.text;
+    label.textContent=lbl;
+    try{
+      const {blob,from}=await gen(t.p||t,useCache);
+      logln(lbl+" — "+blob.size+" bytes ("+from+")");
+      await play(blob);
+    }catch(e){ logln(lbl+" — ERROR "+e.message); }
+    await sleep(gapMs);
+  }
+  label.textContent="Test terminado ✓";
+}
+t1.onclick=()=>run(SAMPLES,false,1500);
+t2.onclick=()=>run(paraParts,true,1000);
+t3.onclick=()=>run(paraParts,false,1000);
+</script>
+</body>
+</html>
