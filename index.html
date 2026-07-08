@@ -97,6 +97,14 @@
   <div class="hint" id="shareMsg"></div>
 </details>
 
+<details>
+  <summary>🔬 Test de audio (diagnóstico)</summary>
+  <button class="btn2" id="dt1">Test 1 · 6 muestras frescas (sin caché)</button>
+  <button class="btn2" id="dt2">Test 2 · Paradigma como el drill (con caché)</button>
+  <button class="btn2" id="dt3">Test 3 · Paradigma fresco (sin caché)</button>
+  <div class="hint" id="dtLog" style="white-space:pre-wrap;font-family:ui-monospace,monospace;"></div>
+</details>
+
 <div class="hint" style="text-align:center">Keep the screen on while playing (a car mount works well). Preload on wifi before driving for instant, offline playback.</div>
 
 <script>
@@ -280,13 +288,13 @@ if (elEnabled()) loadElVoices();
 // Accepts a string or a part object {text, prev, next}. prev/next are surrounding
 // sentence context sent to ElevenLabs so short fragments ("soy", "eres") are
 // pronounced as part of the full Spanish sentence instead of as isolated words.
-async function elFetchAudio(part){
+async function elFetchAudio(part, skipCache){
   const p = (typeof part === "string") ? {text: part} : part;
   const model = elModel.value, voiceId = elVoiceEs.value;
   const prev = p.prev || "", next = p.next || "";
   // context-free phrases keep the old key format, so existing cached audio still hits
   const key = "el|" + model + "|" + voiceId + "|" + (prev ? prev + "«" : "") + p.text + (next ? "»" + next : "");
-  let blob = await cacheGet(key);
+  let blob = skipCache ? null : await cacheGet(key);
   if (blob) return blob;
   const body = { text: p.text, model_id: model };
   if (prev) body.previous_text = prev;
@@ -556,6 +564,42 @@ document.addEventListener("visibilitychange", async ()=>{
     try { wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
   }
 });
+
+// ---------------- audio diagnostic tests ----------------
+const DT_SAMPLES = [
+  {label:"A: eres (solo)", p:{text:"eres"}},
+  {label:"B: eres (contexto)", p:{text:"eres", prev:"soy, ", next:", es, somos, son"}},
+  {label:"C: soy (contexto)", p:{text:"soy", next:", eres, es, somos, son"}},
+  {label:"D: frase completa", p:{text:"soy, eres, es, somos, son"}},
+  {label:"E: ¿Ser o estar? Yo", p:{text:"¿Ser o estar? Yo", next:" profesor."}},
+  {label:"F: profesor.", p:{text:"profesor.", prev:"¿Ser o estar? Yo "}}
+];
+function dtParaParts(){
+  const forms = ["soy","eres","es","somos","son"];
+  return forms.map((f,i)=>({ label:"forma: "+f, p:{
+    text:f,
+    prev: i ? forms.slice(0,i).join(", ")+", " : undefined,
+    next: i<forms.length-1 ? ", "+forms.slice(i+1).join(", ") : undefined
+  }}));
+}
+async function dtRun(items, skipCache, gapMs){
+  if (!elEnabled() || !elVoiceEs.value){ dtLog.textContent = "Falta clave o voz — configura el panel 🎙 primero."; return; }
+  unlockAudio();
+  dtLog.textContent = "";
+  for (const t of items){
+    line.textContent = t.label;
+    try {
+      const blob = await elFetchAudio(t.p, skipCache);
+      dtLog.textContent += t.label + " — " + blob.size + " bytes" + (skipCache ? " (API)" : "") + "\n";
+      await playBlob(blob);
+    } catch(e){ dtLog.textContent += t.label + " — ERROR " + e.message + "\n"; }
+    await new Promise(r=>setTimeout(r, gapMs));
+  }
+  line.textContent = "Test terminado ✓";
+}
+dt1.onclick = ()=>dtRun(DT_SAMPLES, true, 1500);
+dt2.onclick = ()=>dtRun(dtParaParts(), false, 1000);
+dt3.onclick = ()=>dtRun(dtParaParts(), true, 1000);
 </script>
 </body>
 </html>
